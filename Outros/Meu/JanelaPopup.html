@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <title>Principal ⇄ Popup (bidirecional + timer)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    main { max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    h2 { font-size: 18px; margin: 28px 0 8px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"] {
+      flex: 1 1 360px; min-width: 240px;
+      padding: 10px 12px; border-radius: 10px; border: 1px solid #334155;
+      background: #111827; color: #e5e7eb; outline: none;
+    }
+    button {
+      padding: 10px 14px; border-radius: 10px; border: 1px solid #475569;
+      background: #1f2937; color: #e5e7eb; cursor: pointer;
+    }
+    button:hover { filter: brightness(1.06); }
+    .hint { margin-top: 8px; opacity: .8; font-size: 13px; }
+    .panel {
+      margin-top: 16px; padding: 12px; border: 1px solid #334155; border-radius: 12px;
+      background: #0b1224;
+    }
+    .kv { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; margin-top: 8px; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      background: #1f2937; border: 1px solid #334155; font-size: 12px; opacity: .9;
+    }
+    .flash { animation: flash-bg .9s ease; }
+    @keyframes flash-bg {
+      0% { box-shadow: 0 0 0 rgba(14,165,233,0); }
+      50% { box-shadow: 0 0 0 6px rgba(14,165,233,.25); }
+      100% { box-shadow: 0 0 0 rgba(14,165,233,0); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Comunicação entre página principal e popup</h1>
+
+    <h2>→ Enviar do principal para o popup</h2>
+    <div class="row">
+      <input id="msg" type="text" placeholder="Digite a mensagem para o popup..." />
+      <button id="enviar">Enviar para popup</button>
+    </div>
+    <p class="hint">
+      Dica: o navegador pode bloquear pop-ups se não vierem de um clique. Se isso acontecer, permita pop-ups para este site.
+    </p>
+
+    <div class="panel" id="statusPopup">
+      <strong>Status do popup:</strong> <span class="pill" id="popupState">fechado</span>
+      <div class="kv">
+        <div>Último envio ao popup:</div><div id="lastToPopup">—</div>
+        <div>Atualizado em:</div><div id="lastToPopupTime">—</div>
+      </div>
+    </div>
+
+    <h2>← Receber do popup para o principal</h2>
+    <div class="panel">
+      <div class="kv">
+        <div>Mensagem recebida:</div><div id="fromPopupMsg">(vazio)</div>
+        <div>Recebida em:</div><div id="fromPopupTime">—</div>
+        <div>Eventos:</div><div id="eventsLog">—</div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    let popupRef = null;                 // Referência da janela popup
+    const POPUP_NAME = 'PopupAlertaEx';  // Nome fixo p/ reusar a mesma janela
+
+    // Atualiza indicadores visuais na página principal
+    function setPopupState(isOpen) {
+      const el = document.getElementById('popupState');
+      el.textContent = isOpen ? 'aberto' : 'fechado';
+      el.style.background = isOpen ? '#064e3b' : '#1f2937';
+      el.style.borderColor = isOpen ? '#10b981' : '#334155';
+    }
+
+    function logEvent(text) {
+      const el = document.getElementById('eventsLog');
+      const now = new Date().toLocaleString();
+      if (el.textContent === '—') el.textContent = '';
+      el.innerHTML = `<div>[${now}] ${text}</div>` + el.innerHTML;
+    }
+
+    // Função chamada pelo popup para enviar mensagem ao principal (same-origin)
+    window.receiveFromPopup = function (text) {
+      const msg = document.getElementById('fromPopupMsg');
+      const time = document.getElementById('fromPopupTime');
+      msg.textContent = text && text.trim() ? text : '(vazio)';
+      time.textContent = new Date().toLocaleString();
+      msg.closest('.panel').classList.remove('flash');
+      void msg.offsetWidth; // reflow p/ reiniciar animação
+      msg.closest('.panel').classList.add('flash');
+      logEvent('Mensagem recebida do popup.');
+    };
+
+    // Aviso do popup: fechando por inatividade
+    window.popupAutoClosed = function () {
+      logEvent('Popup fechou automaticamente por inatividade (30s).');
+      setPopupState(false);
+    };
+
+    // Fallback: receber via postMessage (caso opener não esteja disponível por algum motivo)
+    window.addEventListener('message', (e) => {
+      // Por segurança, limite ao mesmo origin:
+      if (e.origin !== location.origin) return;
+      const data = e.data || {};
+      if (data.type === 'from-popup') {
+        window.receiveFromPopup(String(data.payload || ''));
+      } else if (data.type === 'popup-auto-closed') {
+        window.popupAutoClosed();
+      }
+    });
+
+    // Abre (ou reaproveita) o popup e injeta HTML se necessário
+    function ensurePopup() {
+      // Tenta abrir/reusar
+      popupRef = window.open('', POPUP_NAME, 'width=520,height=400,resizable=yes,scrollbars=no');
+      if (!popupRef || popupRef.closed) {
+        alert('O navegador bloqueou o pop-up ou não foi possível acessá-lo. Permita pop-ups para este site.');
+        setPopupState(false);
+        return null;
+      }
+
+      try {
+        const doc = popupRef.document;
+        // Se ainda não tem nosso esqueleto, escrevemos a estrutura do popup
+        if (!doc.getElementById('root-popup')) {
+          doc.open();
+          doc.write(`
+            <!doctype html>
+            <html lang="pt-br">
+            <head>
+              <meta charset="utf-8" />
+              <title>Alerta</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+              <style>
+                :root { color-scheme: light dark; }
+                body{
+                  margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+                  display:grid; place-items:center; min-height:100vh;
+                  background:#0b132b; color:#e0e6ed;
+                }
+                .card{
+                  background:#1c2541; border:1px solid #3a506b;
+                  padding:20px; border-radius:12px; min-width:320px; max-width:600px;
+                  box-shadow: 0 10px 30px rgba(0,0,0,.35);
+                }
+                h2{ margin:0 0 8px; font-size:18px; }
+                .label { opacity:.85; font-size:12px; margin-top:6px }
+                #msgOut{
+                  margin: 4px 0 8px; white-space: pre-wrap; word-break: break-word; font-size: 16px;
+                }
+                .time { font-size:12px; opacity:.85; margin-top: 8px; }
+                .row { display:flex; gap:8px; align-items:center; margin-top:10px; }
+                input[type="text"]{
+                  flex:1 1 auto; min-width:180px; padding:8px 10px; border-radius:10px;
+                  border:1px solid #3a506b; background:#1f2a44; color:#fff; outline:none;
+                }
+                button{
+                  padding:8px 12px; border-radius:10px; border:1px solid #3a506b;
+                  background:#1f2a44; color:#fff; cursor:pointer;
+                }
+                button:hover{ filter:brightness(1.06); }
+                .actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+                .count { margin-top:6px; font-size:12px; opacity:.85; }
+                .flash { animation: flash-bg .9s ease; }
+                @keyframes flash-bg {
+                  0% { box-shadow: 0 0 0 rgba(14,165,233,0); }
+                  50% { box-shadow: 0 0 0 6px rgba(14,165,233,.25); }
+                  100% { box-shadow: 0 0 0 rgba(14,165,233,0); }
+                }
+              </style>
+            </head>
+            <body>
+              <div id="root-popup">
+                <div class="card" id="card">
+                  <h2>Alerta (popup)</h2>
+
+                  <div class="label">Mensagem recebida do principal:</div>
+                  <div id="msgOut">(vazio)</div>
+                  <div class="time">Atualizado em: <span id="timeOut">—</span></div>
+
+                  <div class="label" style="margin-top:12px">Responder para a página principal:</div>
+                  <div class="row">
+                    <input id="msgInPopup" type="text" placeholder="Digite sua resposta..." />
+                    <button id="btnSendToParent">Enviar</button>
+                  </div>
+
+                  <div class="actions">
+                    <button id="btnClose">Fechar agora</button>
+                  </div>
+
+                  <div class="count">Fechando automaticamente em: <strong><span id="countdown">30</span>s</strong></div>
+                </div>
+              </div>
+
+              <script>
+                (function(){
+                  // ===== Inatividade / Timer =====
+                  const LIMIT = 30; // segundos
+                  let remaining = LIMIT;
+                  let timerId = null;
+                  const countdownEl = document.getElementById('countdown');
+                  const card = document.getElementById('card');
+
+                  function tick(){
+                    remaining -= 1;
+                    if (remaining < 0) remaining = 0;
+                    countdownEl.textContent = String(remaining);
+                    if (remaining === 0) {
+                      // Avisa o principal (se possível) e fecha
+                      try {
+                        if (window.opener && !window.opener.closed && typeof window.opener.popupAutoClosed === 'function') {
+                          window.opener.popupAutoClosed();
+                        } else if (window.opener) {
+                          window.opener.postMessage({ type: 'popup-auto-closed' }, location.origin);
+                        }
+                      } catch (e) { /* ignore */ }
+                      window.close();
+                    }
+                  }
+
+                  function startTimer(){
+                    clearInterval(timerId);
+                    timerId = setInterval(tick, 1000);
+                  }
+
+                  function resetInactivity(){
+                    remaining = LIMIT;
+                    countdownEl.textContent = String(remaining);
+                    clearInterval(timerId);
+                    startTimer();
+                  }
+
+                  // Expor função para o pai poder resetar ao enviar update
+                  window.resetInactivity = resetInactivity;
+
+                  // Considerar interações como "resposta"
+                  ['keydown','mousedown','mousemove','touchstart'].forEach(evt => {
+                    document.addEventListener(evt, resetInactivity, { passive: true });
+                  });
+
+                  // ===== Envio para o principal =====
+                  const input = document.getElementById('msgInPopup');
+                  const btnSend = document.getElementById('btnSendToParent');
+                  const btnClose = document.getElementById('btnClose');
+
+                  function sendToParent(){
+                    const text = input.value || '';
+                    try {
+                      if (window.opener && !window.opener.closed && typeof window.opener.receiveFromPopup === 'function') {
+                        window.opener.receiveFromPopup(text);
+                      } else if (window.opener) {
+                        // Fallback via postMessage
+                        window.opener.postMessage({ type: 'from-popup', payload: text }, location.origin);
+                      }
+                    } catch (e) {
+                      // ignore
+                    }
+                    resetInactivity(); // considerou como "resposta"
+                  }
+
+                  btnSend.addEventListener('click', sendToParent);
+                  input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      sendToParent();
+                    }
+                  });
+
+                  btnClose.addEventListener('click', () => window.close());
+
+                  // Foco inicial e start do timer
+                  window.focus();
+                  resetInactivity();
+                })();
+              <\/script>
+            </body>
+            </html>
+          `);
+          doc.close();
+        }
+      } catch (err) {
+        console.warn('Não foi possível injetar/atualizar o conteúdo do popup:', err);
+        return null;
+      }
+
+      setPopupState(true);
+      return popupRef;
+    }
+
+    // Atualiza o conteúdo do popup (mensagem + horário) e reseta o timer dele
+    function updatePopupContent(message) {
+      const win = ensurePopup();
+      if (!win) return;
+
+      try {
+        const doc = win.document;
+        const out = doc.getElementById('msgOut');
+        const time = doc.getElementById('timeOut');
+        const card = doc.getElementById('card');
+
+        out.textContent = message && message.trim() ? message : '(vazio)';
+        time.textContent = new Date().toLocaleString();
+
+        // Destaque visual a cada atualização
+        card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
+
+        // Ajusta o título e foca o popup
+        win.document.title = 'Alerta - ' + (message?.slice(0, 24) || '');
+        win.focus();
+
+        // Se o popup expôs a função, reseta o timer de inatividade
+        if (typeof win.resetInactivity === 'function') {
+          win.resetInactivity();
+        }
+      } catch (err) {
+        console.warn('Falha ao atualizar o popup:', err);
+      }
+
+      // Atualiza status no principal
+      document.getElementById('lastToPopup').textContent = message || '(vazio)';
+      document.getElementById('lastToPopupTime').textContent = new Date().toLocaleString();
+      document.getElementById('statusPopup').classList.remove('flash');
+      void document.getElementById('statusPopup').offsetWidth;
+      document.getElementById('statusPopup').classList.add('flash');
+    }
+
+    // UI principal
+    const inputMain = document.getElementById('msg');
+    const btnMain = document.getElementById('enviar');
+
+    btnMain.addEventListener('click', () => {
+      updatePopupContent(inputMain.value);
+    });
+
+    inputMain.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        updatePopupContent(inputMain.value);
+      }
+    });
+
+    // Detecta se o usuário fechou manualmente o popup
+    // (checando periodicamente o handle)
+    setInterval(() => {
+      if (popupRef && popupRef.closed) {
+        setPopupState(false);
+      }
+    }, 1000);
+  </script>
+</body>
+</html>
